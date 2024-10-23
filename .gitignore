@@ -1,0 +1,7 @@
+.env
+/bin
+cdk.out
+/.vscode
+worldcities.csv
+cdk.template.yaml
+bootstrap.template.yaml
