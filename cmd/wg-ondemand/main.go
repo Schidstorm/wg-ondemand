@@ -13,11 +13,15 @@ import (
 )
 
 func main() {
-	configureLogging()
-
 	cmd := &cobra.Command{
 		Use: "wg-ondemand",
+		PersistentPreRun: func(cmd *cobra.Command, args []string) {
+			verbose, _ := cmd.Flags().GetBool("verbose")
+			configureLogging(verbose)
+		},
 	}
+
+	cmd.PersistentFlags().BoolP("verbose", "v", false, "Verbose output")
 
 	cmd.AddCommand(provisionCmd())
 	cmd.AddCommand(deProvisionCmd())
@@ -30,8 +34,12 @@ func main() {
 
 }
 
-func configureLogging() {
+func configureLogging(verbose bool) {
 	log.Default().SetTimeFormat("15:04:05")
+	log.Default().SetPrefix("wg-ondemand")
+	if verbose {
+		log.Default().SetLevel(log.DebugLevel)
+	}
 }
 
 func provisionCmd() *cobra.Command {

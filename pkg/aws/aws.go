@@ -13,6 +13,7 @@ import (
 
 	_ "embed"
 
+	"github.com/aws/aws-sdk-go-v2/aws"
 	"github.com/aws/aws-sdk-go-v2/config"
 	"github.com/aws/aws-sdk-go-v2/service/cloudformation"
 	cfTypes "github.com/aws/aws-sdk-go-v2/service/cloudformation/types"
@@ -70,8 +71,7 @@ func (p *AwsProvisioner) Provision(ctx context.Context, id string, args provisio
 		return provision.ProvisionResult{}, err
 	}
 
-	cdkSim := CdkSim{}
-	cdkSim.Simulate(ctx, p.stsClient)
+	EmulateCdk(ctx, p.stsClient)
 
 	log.Info("Provisioning stack", "stackName", id)
 	stackOutput, stackRemoveHandler, err := p.provisionStack(ctx, id, cdkTemplate, map[string]string{
@@ -99,7 +99,7 @@ func (p *AwsProvisioner) Provision(ctx context.Context, id string, args provisio
 		if err != nil {
 			log.Error("Failed to run init script", "err", err, "stdout", stdout, "stderr", stderr)
 		}
-		return stdout, nil
+		return stdout, err
 	})
 	if err != nil {
 		removeHandler()
@@ -114,16 +114,16 @@ func (p *AwsProvisioner) Provision(ctx context.Context, id string, args provisio
 }
 
 func (p *AwsProvisioner) DeProvision(ctx context.Context, id string, args provision.DeProvisionArguments) error {
+	log.Info("Initialize SDK clients", "region", args.Region)
 	err := p.initSdkClients(ctx, args.Region)
 	if err != nil {
 		return err
 	}
 
 	wg := sync.WaitGroup{}
-	numThreads := 3
-	wg.Add(numThreads)
-	errorsChannel := make(chan error, numThreads)
+	errorsChannel := make(chan error, 16)
 
+	wg.Add(1)
 	go func() {
 		defer wg.Done()
 		identity, err := p.stsClient.GetCallerIdentity(ctx, &sts.GetCallerIdentityInput{})
@@ -133,21 +133,34 @@ func (p *AwsProvisioner) DeProvision(ctx context.Context, id string, args provis
 		}
 
 		bucketName := fmt.Sprintf("cdk-%s-assets-%s-%s", buildArgCustomQualifier, *identity.Account, args.Region)
+		attempt := 0
 		errorsChannel <- retry(func() error {
+			attempt++
+			log.Info("Deleting bucket", "bucketName", bucketName, "attempt", attempt)
 			return p.deleteBucket(ctx, bucketName)
 		})
 	}()
 
+	wg.Add(1)
 	go func() {
 		defer wg.Done()
+
+		attempt := 0
 		errorsChannel <- retry(func() error {
+			attempt++
+			log.Info("Deleting stack", "stackName", id, "attempt", attempt)
 			return p.deleteStack(ctx, bootstrapStackName)
 		})
 	}()
 
+	wg.Add(1)
 	go func() {
 		defer wg.Done()
+
+		attempt := 0
 		errorsChannel <- retry(func() error {
+			attempt++
+			log.Info("Deleting stack", "stackName", id, "attempt", attempt)
 			return p.deleteStack(ctx, id)
 		})
 	}()
@@ -274,7 +287,6 @@ func (p *AwsProvisioner) provisionStack(ctx context.Context, stackName, template
 }
 
 func (p *AwsProvisioner) deleteStack(ctx context.Context, stackName string) error {
-	log.Debug("Deleting", "stackName", stackName)
 	_, err := p.cfClient.DeleteStack(ctx, &cloudformation.DeleteStackInput{
 		StackName: pstr(stackName),
 	})
@@ -486,6 +498,8 @@ func (p *AwsProvisioner) initSdkClients(ctx context.Context, region string) erro
 		return err
 	}
 
+	cfg.Logger = NewAwsLogger(log.Default())
+	cfg.ClientLogMode = aws.LogRequest | aws.LogResponse
 	cfg.Region = region
 
 	p.stsClient = sts.NewFromConfig(cfg)

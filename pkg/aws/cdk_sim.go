@@ -78,16 +78,18 @@ type ManifestArtifact struct {
 	} `json:"properties"`
 }
 
-type CdkSim struct {
+type cdkEmulateState struct {
 	stsClient *sts.Client
 }
 
-func (c *CdkSim) Simulate(ctx context.Context, stsClient *sts.Client) error {
+// EmulateCdk emulates the behavior of the AWS CDK CLI by uploading assets to S3
+func EmulateCdk(ctx context.Context, stsClient *sts.Client) error {
+	var c cdkEmulateState
 	c.stsClient = stsClient
 	return c.uploadAssets(ctx)
 }
 
-func (c *CdkSim) uploadAssets(ctx context.Context) error {
+func (c *cdkEmulateState) uploadAssets(ctx context.Context) error {
 	manifestJson := c.loadManifestJson()
 	var stackAssumeRole string
 	for _, artifact := range manifestJson.Artifacts {
@@ -105,7 +107,7 @@ func (c *CdkSim) uploadAssets(ctx context.Context) error {
 	return err
 }
 
-func (c *CdkSim) innerUploadAssets(ctx context.Context, stsClient *sts.Client) {
+func (c *cdkEmulateState) innerUploadAssets(ctx context.Context, stsClient *sts.Client) {
 	assetManifestJson := c.loadAssetManifestJson()
 	for _, file := range assetManifestJson.Files {
 		assetFile, err := c.packageFilesToUpload(file.Source.Packaging, file.Source.Path)
@@ -134,7 +136,7 @@ func (c *CdkSim) innerUploadAssets(ctx context.Context, stsClient *sts.Client) {
 	}
 }
 
-func (c *CdkSim) packageFilesToUpload(packingType, path string) ([]byte, error) {
+func (c *cdkEmulateState) packageFilesToUpload(packingType, path string) ([]byte, error) {
 	var assetFile []byte
 	var err error
 	if packingType == "zip" {
@@ -153,26 +155,6 @@ func (c *CdkSim) packageFilesToUpload(packingType, path string) ([]byte, error) 
 
 	return assetFile, nil
 }
-
-// func expandAllAwsVariables(ctx context.Context, obj any, args map[string]string) {
-// 	typeOf := reflect.TypeOf(obj)
-// 	valueOf := reflect.ValueOf(obj)
-
-// 	for i := 0; i < typeOf.NumField(); i++ {
-// 		field := typeOf.Field(i)
-// 		value := valueOf.Field(i)
-
-// 		if field.Type.Kind() == reflect.String {
-// 			value.SetString(expandAwsVariables(ctx, args["accountId"], args["region"], value.String()))
-// 		} else if field.Type.Kind() == reflect.Ptr && field.Type.Elem().Kind() == reflect.String {
-// 			value.Set(reflect.ValueOf(pstr(expandAwsVariables(ctx, args["accountId"], args["region"], *value.Interface().(*string))))
-// 		} else if field.Type.Kind() == reflect.Struct {
-// 			expandAllAwsVariables(ctx, value.Interface(), args)
-// 		} else if field.Type.Kind() == reflect.Ptr && field.Type.Elem().Kind() == reflect.Struct {
-// 			expandAllAwsVariables(ctx, value.Interface(), args)
-// 		}
-// 	}
-// }
 
 func expandAwsVariables(ctx context.Context, stsClient *sts.Client, s string) string {
 	identity, err := stsClient.GetCallerIdentity(ctx, &sts.GetCallerIdentityInput{})
@@ -196,17 +178,10 @@ func expandAwsVariables(ctx context.Context, stsClient *sts.Client, s string) st
 		}
 
 		return match
-
-		// case "AccountId":
-		// 	return accountId
-		// case "Region":
-		// 	return region
-		// case "Partition":
-		// 	return "aws"
 	})
 }
 
-func (c *CdkSim) zipDirContent(dir string) ([]byte, error) {
+func (c *cdkEmulateState) zipDirContent(dir string) ([]byte, error) {
 	var buf bytes.Buffer
 	zipWriter := zip.NewWriter(&buf)
 	defer zipWriter.Close()
@@ -244,7 +219,7 @@ func (c *CdkSim) zipDirContent(dir string) ([]byte, error) {
 	return buf.Bytes(), nil
 }
 
-func (c *CdkSim) walkDir(fs embed.FS, dir string, cb func(path string, info os.FileInfo, err error) error) error {
+func (c *cdkEmulateState) walkDir(fs embed.FS, dir string, cb func(path string, info os.FileInfo, err error) error) error {
 	entries, err := fs.ReadDir(dir)
 	if err != nil {
 		return err
@@ -273,7 +248,7 @@ func (c *CdkSim) walkDir(fs embed.FS, dir string, cb func(path string, info os.F
 	return nil
 }
 
-func (c *CdkSim) assumeRoleS3Client(ctx context.Context, stsClient *sts.Client, roleArn string, cb func(s3Client *s3.Client) error) error {
+func (c *cdkEmulateState) assumeRoleS3Client(ctx context.Context, stsClient *sts.Client, roleArn string, cb func(s3Client *s3.Client) error) error {
 	var innerErr error
 	_, err := stsClient.AssumeRole(ctx, &sts.AssumeRoleInput{
 		RoleArn:         pstr(roleArn),
@@ -294,7 +269,7 @@ func (c *CdkSim) assumeRoleS3Client(ctx context.Context, stsClient *sts.Client, 
 	return innerErr
 }
 
-func (c *CdkSim) assumeRoleStsClient(ctx context.Context, roleArn string, cb func(s3Client *sts.Client) error) error {
+func (c *cdkEmulateState) assumeRoleStsClient(ctx context.Context, roleArn string, cb func(s3Client *sts.Client) error) error {
 	log.Info("Assuming role", "roleArn", roleArn)
 	var innerErr error
 	_, err := c.stsClient.AssumeRole(ctx, &sts.AssumeRoleInput{
@@ -316,7 +291,7 @@ func (c *CdkSim) assumeRoleStsClient(ctx context.Context, roleArn string, cb fun
 	return innerErr
 }
 
-func (c *CdkSim) loadAssetManifestJson() (assetManifestJson StackAssetJson) {
+func (c *cdkEmulateState) loadAssetManifestJson() (assetManifestJson StackAssetJson) {
 	manifestJson := c.loadManifestJson()
 	var assetPath string
 	for _, artifact := range manifestJson.Artifacts {
@@ -330,12 +305,12 @@ func (c *CdkSim) loadAssetManifestJson() (assetManifestJson StackAssetJson) {
 	return
 }
 
-func (c *CdkSim) loadManifestJson() (manifestJson ManifestJson) {
+func (c *cdkEmulateState) loadManifestJson() (manifestJson ManifestJson) {
 	c.loadCdkOutFile("cdk.out/manifest.json", &manifestJson)
 	return
 }
 
-func (c *CdkSim) loadCdkOutFile(path string, out any) {
+func (c *cdkEmulateState) loadCdkOutFile(path string, out any) {
 	fileBytes, err := cdkOut.ReadFile(path)
 	if err != nil {
 		panic(err)
